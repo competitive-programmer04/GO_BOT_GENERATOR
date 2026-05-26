@@ -15,13 +15,56 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// type RequestMessage stru3ct{
-// 	bot_id string `json:"botId"`
-// 	action string `json: "action"`
-// }
-type ServerResponse struct{
+type GeneralServerResponse struct{
+	Event string `json:"event"`
+	ProcessedAt int64 `json:"processed_at"`
+}
+
+type FilledResponse struct{
+	Event string `json:"event"`
+	BuyOrderId string `json:"buy_order_id"`
+	SellOrderId string `json:"sell_order_id"`
+	FilledQuantity int `json:"filled_quantity"`
+	MatchPrice float64 `json:"match_price"`
+	ProcessedAt int64 `json:"processed_at"`
+}
+
+type PartiallyFilledResponse struct{
+	Event string `json:"event"`
+	BuyOrderId string `json:"buy_order_id"`
+	SellOrderId string `json:"sell_order_id"`
+	MatchPrice float64 `json:"match_price"`
+	FilledQuantity int `json:"filled_quantity"`
+	BuyRemaining int `json:"buy_remaining"`
+	SellRemaining int `json:"sell_remaining"`
+	ProcessedAt int64 `json:"processed_at"`
+}
+
+type AcknowledgedResponse struct{
+	Event string `json:"event"`
 	OrderId string `json:"order_id"`
-	Status string `json:"status"`
+	BotId string `json:"bot_id"`
+	ProcessedAt int64 `json:"processed_at"`
+}
+
+type CancelledResponse struct{
+	Event string `json:"event"`
+	OrderId string `json:"order_id"`
+	BotId string `json:"bot_id"`
+	ProcessedAt int64 `json:"processed_at"`
+}
+
+type RejectedEvent struct{
+	Event string `json:"event"`
+	IncomingOrderId string `json:"incoming_order_id"`
+	RestingOrderId string `json:"resting_order_id"`
+	ProcessedAt int64  `json:"processed_at"`
+}
+
+type InvalidRequest struct{
+	Event string `json:"event"`
+	OrderId string `json:"order_id"`
+	BotId string `json:"bot_id"`
 	ProcessedAt int64 `json:"processed_at"`
 }
 
@@ -36,9 +79,12 @@ type ClientRequest struct{
 	timestamp int64
 }
 
+type Order struct{
+	timestamp int64
+	status string 
+}
+
 func main(){
-	ini_start_bot:=1;
-	ini_end_bot:=10;
 	serverURL:= url.URL{Scheme:"ws",Host:"localhost:8080",Path:"/trade"};
 	connection,_,err:= websocket.DefaultDialer.Dial(serverURL.String(),nil);
 	if err!=nil{
@@ -57,14 +103,16 @@ func main(){
 	})
 	ctx:=context.Background()
 	
-	checkingRequest:=make(map[string]ClientRequest)
+	var checkingRequest sync.Map
 	orderChannel:=make(chan string,100000);
 	resultChannel:=make(chan string,100000);
-	// time_stamp:=make(map[string]int64)
 	var pendingOrders sync.Map
+	fillChannel:=make(chan string)
 	done:=make(chan struct{});
 	ticker:=time.NewTicker(time.Second)
 	defer ticker.Stop()
+	ini_start_bot:=1;
+	ini_end_bot:=10;
 	go func(){
 		for{
 		select{
@@ -72,43 +120,31 @@ func main(){
 		fmt.Printf("Current second: %d",t.Second())
 		for i:=ini_start_bot;i<=ini_end_bot/10;i++{
 			botId:=fmt.Sprintf("bot-%d",i)
-			func(bot_id string){
+			go func(bot_id string){
 				for{
 					now:=time.Now().UnixMilli();
 					orderId:=fmt.Sprintf("%s-%d",botId,now);
 					price:=100.0+rand.Float64()*50.0;
 					quantity:=rand.Intn(100)+10;
-					// orderType:=[]string{"Limit","Market"}
-					// randomOrderType:=orderType[rand.Intn(len(orderType))];
-					orderType:="Limit"
+					orderType:="limit"
 					symbols:=[]string{"AAPL","TSLA","GOOG","MSFT","AMZN"};
 					randomSymbol:=symbols[rand.Intn(len(symbols))];
-					requestMethods:=[]string{"Buy","Sell","Cancel"};
+					requestMethods:=[]string{"buy","sell","cancel"};
 					randomRequestMethod:=requestMethods[rand.Intn(len(requestMethods))];
 					negativeTesting:=rand.Intn(100)+1;
 					if negativeTesting<5{
 						switch (negativeTesting){
 						case 1:
 							price = -100.0+rand.Float64()*50
-							//break
 						case 2:
 							quantity = rand.Intn(-100)-10
-							//break
 						case 3:
-							orderType = "Market"
-							//break
+							orderType = "market"
 						case 4:
-							corruptRequestMethod:=[]string{"Hold","Wait","Steal"}
+							corruptRequestMethod:=[]string{"hold","wait","steal"}
 							randomRequestMethod = corruptRequestMethod[rand.Intn(len(corruptRequestMethod))]
-							//break
 						}
 					}
-					// orderType="";
-					// if rand.Intn(2)<=1{
-					// 	orderType:="Limit"+
-					// }else{
-					// 	orderType="Market"
-					// }
 					request:=ClientRequest{
 						order_id: orderId,
 						bot_id: botId,
@@ -124,13 +160,14 @@ func main(){
 						fmt.Println("error in converting request to byte array")
 						continue
 					}
-					pendingOrders.Store(orderId,now)
-					checkingRequest[orderId]=request
 				    orderChannel<-string(message)
+					checkingRequest.Store(orderId,request)
+					order:=Order{
+						timestamp: request.timestamp,
+						status: "",
+					}
+					pendingOrders.Store(orderId,order)
 				    time.Sleep(100*time.Millisecond);
-					// jsonpayload:=fmt.Sprintf("{order_id:%s,bot_id:%s,symbol:%s,price:%.2f,quantity:%d,action:%s,order_type:%s,timestamp:%d}",orderId,bot_id,
-					// randomSymbol,price,quantity,randomRequestMethod,randomOrderType,now);
-					//time_stamp[orderId]=now
 				}
 			}(botId)
 			ini_start_bot=ini_end_bot;
@@ -143,7 +180,78 @@ func main(){
 	}
 	}()
 	go func(){
-		// var requestMessage RequestMessage;
+		for{
+			price:=100+rand.Float64()*100
+		    quantity:=rand.Intn(100)+50
+			drainLoop:
+			for{
+				select{
+				case<-fillChannel:
+				default:
+					break drainLoop
+				}
+			}
+			now:=time.Now().UnixMilli()
+			orderId:=fmt.Sprintf("bot-%d-%d",1,now)
+
+			order1:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
+
+			SendandWait:=func(order string)bool{
+				orderChannel<-order
+				pendingOrders.Store(orderId,Order{timestamp: now,status: ""})
+				select{
+				case<-fillChannel:
+					return true
+				case <-time.After(2*time.Second):
+					return false
+				}
+			}
+			if !(SendandWait(order1)){
+				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
+			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+			continue
+			}
+			now=time.Now().UnixMilli()
+			orderId=fmt.Sprintf("bot-%d-%d",2,now)
+			order2:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
+
+			if !(SendandWait(order2)){
+				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
+			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
+			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+			continue
+			}
+			now=time.Now().UnixMilli()
+			orderId=fmt.Sprintf("bot-%d-%d",3,now)
+			order3:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,now)
+			if !(SendandWait(order3)){
+				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
+			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
+			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,now)
+			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+			continue
+			}
+			now=time.Now().UnixMilli()
+			orderId=fmt.Sprintf("bot-%d-%d",4,now)
+			order4:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:buy,timestamp:%d,order_type:limit}",
+		    orderId,fmt.Sprintf("sniperbot-%d",4),price,quantity,now)
+			orderChannel<-order4
+			pendingOrders.Store(orderId,Order{timestamp: now,status: ""})
+		}
+	}()
+	go func(){
 		for message:= range orderChannel{
 			connection.WriteMessage(websocket.TextMessage,[]byte(message))
 		};
@@ -154,8 +262,8 @@ func main(){
 		for{
 			pendingOrders.Range(func(key, value interface{})bool{
 				orderId:=key.(string);
-				sentTime:=value.(int64);
-				if currentTime-sentTime>=2000{
+				sentOrder:=value.(Order);
+				if currentTime-sentOrder.timestamp>2000 && sentOrder.status==""{
 					fmt.Println("the server took more than 2 second to response so it will not be accepted")
 					pendingOrders.Delete(orderId)
 				}
@@ -163,7 +271,6 @@ func main(){
 			})
 		}
 	}()
-	// done:=make(chan struct{});
 	go func(){
 		for{
 			_,message,err:=connection.ReadMessage()
@@ -172,48 +279,284 @@ func main(){
 				close(done)
 				return;
 			}
-			var response ServerResponse;
+			var response GeneralServerResponse;
 			parseErr:=json.Unmarshal(message,&response)
 			if parseErr!=nil{
-				fmt.Println("the response given by the server is not in the desired form")
-				continue
+				fmt.Println("the response returned by the server is not in the desired form")
+				continue;
 			}
-			if response.OrderId==""{
-				print("server not return which bot request he processed necessary for calculating latency")
-				continue
-			}
-			// latency:=time_stamp[response.OrderId]-response.ProcessedAt;
-			// Success:=1;
-			sentTimeInterface,exists:=pendingOrders.Load(response.OrderId)
-			if exists{
-				fmt.Println("server returns the response in under 2 seconds");
-				requestSend:=checkingRequest[response.OrderId]
-				if requestSend.price<=0 || requestSend.quantity<=0 || requestSend.order_type=="Market" || !slices.Contains([]string{"Buy","Sell","Cancel"},requestSend.action){
-					if response.Status == "rejected"{
-						latency:=response.ProcessedAt-sentTimeInterface.(int64);
-				        success:=1;
-						result:=fmt.Sprintf("%d,%d",latency,success)
-						resultChannel<-result
+			switch (response.Event){
+			case "filled":
+				var filled_response FilledResponse
+				err:=json.Unmarshal(message,&filled_response)
+				if err!=nil{
+					fmt.Println("the response returned by the server is not in the correct format")
+					continue
+				}
+				order1,buy_order_exists:=pendingOrders.Load(filled_response.BuyOrderId)
+				order2,sell_order_exists:=pendingOrders.Load(filled_response.SellOrderId)
+				if !buy_order_exists || !sell_order_exists{
+					fmt.Println("engine returned the response of a non existing request")
+					latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					checkingRequest.Delete(filled_response.BuyOrderId)
+					checkingRequest.Delete(filled_response.SellOrderId)
+					continue
+				}
+				pendingOrders.Store(filled_response.BuyOrderId,Order{timestamp: order1.(Order).timestamp,status: "filled"})
+				pendingOrders.Store(filled_response.SellOrderId,Order{timestamp: order2.(Order).timestamp,status: "filled"})
+				req1,_:=checkingRequest.Load(filled_response.BuyOrderId)
+				req2,_:=checkingRequest.Load(filled_response.SellOrderId)
+				buy_req:=req1.(ClientRequest)
+				sell_req:=req2.(ClientRequest)
+				if (buy_req.action=="cancel"||sell_req.action=="cancel")||(buy_req.action==sell_req.action)||
+				(buy_req.symbol!=sell_req.symbol)||(buy_req.quantity!=sell_req.quantity)||(buy_req.bot_id==sell_req.bot_id){
+					fmt.Println("response is wrong")
+					latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					pendingOrders.Delete(buy_req.order_id)
+					pendingOrders.Delete(sell_req.order_id)
+					checkingRequest.Delete(buy_req.order_id)
+					checkingRequest.Delete(sell_req.order_id)
+					continue
+				}
+				order_symbol:=buy_req.symbol
+				if order_symbol=="IICPC_PRIO"{
+					if sell_req.bot_id=="sniperbot-2"&&filled_response.MatchPrice==sell_req.price{
+					   latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
+					   success:=1
+					   result:=fmt.Sprintf("%d,%d",latency,success)
+					   resultChannel<-result
 					}else{
-						latency:=response.ProcessedAt-sentTimeInterface.(int64);
-						success:=0
-						result:=fmt.Sprintf("%d,%d",latency,success)
-						resultChannel<-result
+						latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
+					   success:=0
+					   result:=fmt.Sprintf("%d,%d",latency,success)
+					   resultChannel<-result
 					}
 				}else{
-					latency:=response.ProcessedAt-sentTimeInterface.(int64);
-					success:=1;
+					if buy_req.price>=sell_req.price{
+						latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
+					   success:=1
+					   result:=fmt.Sprintf("%d,%d",latency,success)
+					   resultChannel<-result
+					}else{
+						latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
+					   success:=0
+					   result:=fmt.Sprintf("%d,%d",latency,success)
+					   resultChannel<-result
+					}
+				}
+				pendingOrders.Delete(buy_req.order_id)
+				pendingOrders.Delete(sell_req.order_id)
+				checkingRequest.Delete(buy_req.order_id)
+				checkingRequest.Delete(sell_req.order_id)
+
+			case "partially_filled":
+				var partially_filled_response PartiallyFilledResponse
+				err:=json.Unmarshal(message,&partially_filled_response)
+				if err!=nil{
+					fmt.Printf("engine not returned the response in desired format")
+					continue
+				}
+				order1,buy_order_exists:=pendingOrders.Load(partially_filled_response.BuyOrderId)
+				order2,sell_order_exists:=pendingOrders.Load(partially_filled_response.SellOrderId)
+				if !buy_order_exists||!sell_order_exists{
+					fmt.Println("engine returned the response of a non existing request")
+					latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					checkingRequest.Delete(partially_filled_response.BuyOrderId)
+					checkingRequest.Delete(partially_filled_response.SellOrderId)
+					continue
+				}
+				pendingOrders.Store(partially_filled_response.BuyOrderId,Order{timestamp: order1.(Order).timestamp,status: "partially_filled"})
+				pendingOrders.Store(partially_filled_response.SellOrderId,Order{timestamp: order2.(Order).timestamp,status: "partially_filled"})
+				req1,_:=checkingRequest.Load(partially_filled_response.BuyOrderId)
+				req2,_:=checkingRequest.Load(partially_filled_response.SellOrderId)
+				buy_req:=req1.(ClientRequest)
+				sell_req:=req2.(ClientRequest)
+				if (buy_req.action=="cancel"||sell_req.action=="cancel")||(buy_req.action==sell_req.action)||
+				(buy_req.symbol!=sell_req.symbol)||(buy_req.bot_id==sell_req.bot_id){
+					fmt.Println("response is wrong")
+					latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					pendingOrders.Delete(buy_req.order_id)
+					pendingOrders.Delete(sell_req.order_id)
+					checkingRequest.Delete(buy_req.order_id)
+					checkingRequest.Delete(sell_req.order_id)
+					continue
+				}
+				if (buy_req.price>=partially_filled_response.MatchPrice&&partially_filled_response.MatchPrice<=sell_req.price)&&
+				(buy_req.price>=sell_req.price)&&(partially_filled_response.BuyRemaining+partially_filled_response.FilledQuantity==buy_req.quantity)&&
+				(partially_filled_response.SellRemaining+partially_filled_response.FilledQuantity==sell_req.quantity)&&(buy_req.bot_id!=sell_req.bot_id){
+					   latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					   success:=1
+					   result:=fmt.Sprintf("%d,%d",latency,success)
+					   resultChannel<-result
+					   buy_req.quantity=partially_filled_response.BuyRemaining
+					   sell_req.quantity=partially_filled_response.SellRemaining
+					   checkingRequest.Store(buy_req.order_id,buy_req)
+					   checkingRequest.Store(sell_req.order_id,sell_req)
+				}else{
+					   latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					   success:=0
+					   result:=fmt.Sprintf("%d,%d",latency,success)
+					   resultChannel<-result
+				pendingOrders.Delete(buy_req.order_id)
+				pendingOrders.Delete(sell_req.order_id)
+				checkingRequest.Delete(buy_req.order_id)
+				checkingRequest.Delete(sell_req.order_id)
+				}
+			case "acknowledgement":
+				var ack_response AcknowledgedResponse
+				err:=json.Unmarshal(message,&ack_response)
+				if err!=nil{
+					fmt.Println("The response returned by the engine is not in the correct format")
+					continue
+				}
+				order1,order_exists:=pendingOrders.Load(ack_response.OrderId)
+				if !order_exists{
+					fmt.Println("engine returned the response of a non existing request")
+					latency:=time.Now().UnixMilli()-ack_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					checkingRequest.Delete(ack_response.OrderId)
+					continue
+				}
+				pendingOrders.Store(ack_response.OrderId,Order{timestamp: order1.(Order).timestamp,status: "acknowledgement"})
+				req,_:=checkingRequest.Load(ack_response.OrderId)
+				request:=req.(ClientRequest)
+				if request.symbol=="IICPC_PRIO"{
+					fillChannel<-"acknowledgement"
+					latency:=time.Now().UnixMilli()-ack_response.ProcessedAt
+					success:=1
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+				}else{
+					latency:=time.Now().UnixMilli()-ack_response.ProcessedAt
+					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 				}
-			}else{
-				fmt.Println("server returns the response after 2seconds so it is of no use");
-				latency:=2000;
-				success:=0;
+			case "cancelled":
+				var cancel_response CancelledResponse
+				err=json.Unmarshal(message,&cancel_response)
+				if err!=nil{
+					fmt.Println("engine not returned the response in the desired format")
+					continue
+				}
+				order,order_exists:=pendingOrders.Load(cancel_response.OrderId)
+				if !order_exists{
+					fmt.Println("engine returned the response of a non existing event")
+					latency:=time.Now().UnixMilli()-cancel_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					checkingRequest.Delete(cancel_response.OrderId)
+					continue
+				}
+				pendingOrders.Store(cancel_response.OrderId,Order{timestamp: order.(Order).timestamp,status: "cancelled"})
+				req,_:=checkingRequest.Load(cancel_response.OrderId)
+				request:=req.(ClientRequest)
+				if request.bot_id==cancel_response.BotId{
+					latency:=time.Now().UnixMilli()-cancel_response.ProcessedAt
+					success:=1
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+				}else{
+					latency:=time.Now().UnixMilli()-cancel_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+				}
+				pendingOrders.Delete(request.order_id)
+				checkingRequest.Delete(request.order_id)
+			case "rejected":
+				var reject_response RejectedEvent
+				err=json.Unmarshal(message,&reject_response)
+				if err!=nil{
+					fmt.Println("the response returned by the engine is not in the correct format")
+					continue
+				}
+				order1,in_order_exists:=pendingOrders.Load(reject_response.IncomingOrderId)
+				order2,res_order_exists:=pendingOrders.Load(reject_response.RestingOrderId)
+				if !in_order_exists||!res_order_exists{
+					fmt.Println("server returned the response of a non existing event")
+					latency:=time.Now().UnixMilli()-reject_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					checkingRequest.Delete(reject_response.IncomingOrderId)
+					continue
+				}
+				pendingOrders.Store(reject_response.IncomingOrderId,Order{timestamp: order1.(Order).timestamp,status: "rejected"})
+				pendingOrders.Store(reject_response.RestingOrderId,Order{timestamp: order2.(Order).timestamp,status: "rejected"})
+				req1,_:=checkingRequest.Load(reject_response.IncomingOrderId)
+				req2,_:=checkingRequest.Load(reject_response.RestingOrderId)
+				incoming_request:=req1.(ClientRequest)
+				resting_req,_:=req2.(ClientRequest)
+				if (incoming_request.action!="cancel"&&resting_req.action!="cancel")&&(incoming_request.action!=resting_req.action)&&
+				(incoming_request.symbol==resting_req.symbol)&&(incoming_request.bot_id==resting_req.bot_id){
+					latency:=time.Now().UnixMilli()-reject_response.ProcessedAt
+					success:=1
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					pendingOrders.Delete(incoming_request.order_id)
+					checkingRequest.Delete(incoming_request.order_id)
+				}else{
+					latency:=time.Now().UnixMilli()-reject_response.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+				}
+			case "invalid_request":
+				var invalid_request InvalidRequest
+				err:=json.Unmarshal(message,&invalid_request)
+				if err!=nil{
+					fmt.Println("the response returned by the engine is not is the correct format")
+					continue
+				}
+				order,order_exists:=pendingOrders.Load(invalid_request.OrderId)
+				if !order_exists{
+					fmt.Println("engine returned the response of a non existing event")
+					latency:=time.Now().UnixMilli()-invalid_request.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+					checkingRequest.Delete(invalid_request.OrderId)
+					continue
+				}
+				pendingOrders.Store(invalid_request.OrderId,Order{timestamp: order.(Order).timestamp,status: "invalid request"})
+				req,_:=checkingRequest.Load(invalid_request.OrderId)
+				request:=req.(ClientRequest)
+				if request.price<=0 || request.quantity<=0 || request.order_type=="market" || slices.Contains([]string{"hold","wait","steal"},request.action){
+					latency:=time.Now().UnixMilli()-invalid_request.ProcessedAt
+					success:=1
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+				}else{
+					latency:=time.Now().UnixMilli()-invalid_request.ProcessedAt
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
+				}
+				pendingOrders.Delete(request.order_id)
+				checkingRequest.Delete(request.order_id)
+			default:
+				fmt.Println("the event in the response field doen not match with the above events so the rseponse is wrong")
+				latency:=time.Now().UnixMilli()-response.ProcessedAt
+				success:=0
 				result:=fmt.Sprintf("%d,%d",latency,success)
 				resultChannel<-result
 			}
-			delete(checkingRequest,response.OrderId);
 		}
 	}()
 	go func(){
