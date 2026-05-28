@@ -192,12 +192,12 @@ func main(){
 				}
 			}
 			now:=time.Now().UnixMilli()
-			orderId:=fmt.Sprintf("bot-%d-%d",1,now)
+			orderId1:=fmt.Sprintf("bot-%d-%d",1,now)
 
 			order1:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
+		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
 
-			SendandWait:=func(order string)bool{
+			SendandWait:=func(order string,orderId string)bool{
 				orderChannel<-order
 				pendingOrders.Store(orderId,Order{timestamp: now,status: ""})
 				select{
@@ -207,48 +207,48 @@ func main(){
 					return false
 				}
 			}
-			if !(SendandWait(order1)){
+			if !(SendandWait(order1,orderId1)){
 				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
-			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
+			pendingOrders.Store(orderId1,Order{timestamp: time.Now().UnixMilli(),status: ""})
 			continue
 			}
 			now=time.Now().UnixMilli()
-			orderId=fmt.Sprintf("bot-%d-%d",2,now)
+			orderId2:=fmt.Sprintf("bot-%d-%d",2,now)
 			order2:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
+		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
 
-			if !(SendandWait(order2)){
+			if !(SendandWait(order2,orderId2)){
 				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
-			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
+			pendingOrders.Store(orderId1,Order{timestamp: time.Now().UnixMilli(),status: ""})
 				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
-			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,time.Now().UnixMilli())
+			pendingOrders.Store(orderId2,Order{timestamp: time.Now().UnixMilli(),status: ""})
 			continue
 			}
 			now=time.Now().UnixMilli()
-			orderId=fmt.Sprintf("bot-%d-%d",3,now)
+			orderId3:=fmt.Sprintf("bot-%d-%d",3,now)
 			order3:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,now)
-			if !(SendandWait(order3)){
+		    orderId3,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,now)
+			if !(SendandWait(order3,orderId3)){
 				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
-			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
+			pendingOrders.Store(orderId1,Order{timestamp: time.Now().UnixMilli(),status: ""})
 				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
-			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity, time.Now().UnixMilli())
+			pendingOrders.Store(orderId2,Order{timestamp: time.Now().UnixMilli(),status: ""})
 				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,now)
-			pendingOrders.Store(orderId,Order{timestamp: time.Now().UnixMilli(),status: ""})
+		    orderId3,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,time.Now().UnixMilli())
+			pendingOrders.Store(orderId3,Order{timestamp: time.Now().UnixMilli(),status: ""})
 			continue
 			}
 			now=time.Now().UnixMilli()
-			orderId=fmt.Sprintf("bot-%d-%d",4,now)
+			orderId4:=fmt.Sprintf("bot-%d-%d",4,now)
 			order4:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:buy,timestamp:%d,order_type:limit}",
-		    orderId,fmt.Sprintf("sniperbot-%d",4),price,quantity,now)
+		    orderId4,fmt.Sprintf("sniperbot-%d",4),price,quantity,now)
 			orderChannel<-order4
-			pendingOrders.Store(orderId,Order{timestamp: now,status: ""})
+			pendingOrders.Store(orderId4,Order{timestamp: now,status: ""})
 		}
 	}()
 	go func(){
