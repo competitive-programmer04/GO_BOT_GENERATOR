@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"net/url"
+	"net"
+	//"net/url"
 	"slices"
 	"sync"
 	"time"
-
+	"strings"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+	pb "github.com/competitive-programmer04/go_bot_generator/proto/gen"
 )
 
 type GeneralServerResponse struct{
@@ -69,24 +72,29 @@ type InvalidRequest struct{
 }
 
 type ClientRequest struct{
-	order_id string
-	bot_id string
-	symbol string
-	price float64
-	quantity int
-	action string
-	order_type string
-	timestamp int64
+	OrderId string `json:"order_id"`
+	BotId string `json:"bot_id"`
+	Symbol string `json:"symbol"`
+	Price float64 `json:"price"`
+	Quantity int `json:"quantity"`
+	Action string `json:"action"`
+	OrderType string `json:"order_type"`
+	Timestamp int64 `json:"timestamp"`
 }
 
 type Order struct{
-	timestamp int64
-	status string 
+	Timestamp int64
+	Status string 
 }
 
-func main(){
-	serverURL:= url.URL{Scheme:"ws",Host:"localhost:8080",Path:"/trade"};
-	connection,_,err:= websocket.DefaultDialer.Dial(serverURL.String(),nil);
+var rdb *redis.Client
+
+func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
+	dialctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+	defer cancel()
+	// serverURL:= url.URL{Scheme:"ws",Host:"localhost:8080",Path:"/trade"};
+	connection,_,err:= websocket.DefaultDialer.DialContext(dialctx,url,nil);
+	// connection,_,err:=websocket.DefaultDialer.Dial(url,nil);
 	if err!=nil{
 		log.Fatal("cannot create a websocket connection with the server");
 		fmt.Println(err);
@@ -95,12 +103,12 @@ func main(){
 	}
 	defer connection.Close();
 
-	rdb:=redis.NewClient(&redis.Options{
-		Addr:"localhost:6379",
-		Password:"",
-		DB:0,
-		Protocol:2,
-	})
+	// rdb=redis.NewClient(&redis.Options{
+	// 	Addr:"localhost:6379",
+	// 	Password:"",
+	// 	DB:0,
+	// 	Protocol:2,
+	// })
 	ctx:=context.Background()
 	
 	var checkingRequest sync.Map
@@ -108,7 +116,7 @@ func main(){
 	resultChannel:=make(chan string,100000);
 	var pendingOrders sync.Map
 	fillChannel:=make(chan string)
-	done:=make(chan struct{});
+	//done:=make(chan struct{});
 	ticker:=time.NewTicker(time.Second)
 	defer ticker.Stop()
 	ini_start_bot:=1;
@@ -116,8 +124,11 @@ func main(){
 	go func(){
 		for{
 		select{
+		case<-botctx.Done():
+			fmt.Println("Shutting down the load service")
+			return
 	case t:=<-ticker.C:
-		fmt.Printf("Current second: %d",t.Second())
+		fmt.Printf("Current second: %d\n",t.Second())
 		for i:=ini_start_bot;i<=ini_end_bot/10;i++{
 			botId:=fmt.Sprintf("bot-%d",i)
 			go func(bot_id string){
@@ -137,7 +148,7 @@ func main(){
 						case 1:
 							price = -100.0+rand.Float64()*50
 						case 2:
-							quantity = rand.Intn(-100)-10
+							quantity = rand.Intn(100)-1000
 						case 3:
 							orderType = "market"
 						case 4:
@@ -146,14 +157,14 @@ func main(){
 						}
 					}
 					request:=ClientRequest{
-						order_id: orderId,
-						bot_id: botId,
-						symbol: randomSymbol,
-						price: price,
-						quantity: quantity,
-						action: randomRequestMethod,
-						order_type: orderType,
-						timestamp: now,
+						OrderId: orderId,
+						BotId: botId,
+						Symbol: randomSymbol,
+						Price: price,
+						Quantity: quantity,
+						Action: randomRequestMethod,
+						OrderType: orderType,
+						Timestamp: now,
 					}
 					message,err:=json.Marshal(request)
 					if err!=nil{
@@ -163,8 +174,8 @@ func main(){
 				    orderChannel<-string(message)
 					checkingRequest.Store(orderId,request)
 					order:=Order{
-						timestamp: request.timestamp,
-						status: "",
+						Timestamp: request.Timestamp,
+						Status: "",
 					}
 					pendingOrders.Store(orderId,order)
 				    time.Sleep(100*time.Millisecond);
@@ -173,9 +184,9 @@ func main(){
 			ini_start_bot=ini_end_bot;
 			ini_end_bot=2*ini_end_bot;
 		}
-	case <-done:
-		fmt.Println("closing the connection between our bots and server");
-		return;
+	// case <-done:
+	// 	fmt.Println("closing the connection between our bots and server");
+	// 	return;
 	 }
 	}
 	}()
@@ -186,6 +197,9 @@ func main(){
 			drainLoop:
 			for{
 				select{
+				case <-botctx.Done():
+					fmt.Println("shutting down the filled event service");
+					return 
 				case<-fillChannel:
 				default:
 					break drainLoop
@@ -194,12 +208,12 @@ func main(){
 			now:=time.Now().UnixMilli()
 			orderId1:=fmt.Sprintf("bot-%d-%d",1,now)
 
-			order1:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
+			order1:=fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"qantity":%d,"symbol":"IICPC_PRIO","action":"sell","timestamp":%d,"order_type":"limit"}`,
 		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
 
 			SendandWait:=func(order string,orderId string)bool{
 				orderChannel<-order
-				pendingOrders.Store(orderId,Order{timestamp: now,status: ""})
+				pendingOrders.Store(orderId,Order{Timestamp: now,Status: ""})
 				select{
 				case<-fillChannel:
 					return true
@@ -208,67 +222,80 @@ func main(){
 				}
 			}
 			if !(SendandWait(order1,orderId1)){
-				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+				orderChannel<-fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
-			pendingOrders.Store(orderId1,Order{timestamp: time.Now().UnixMilli(),status: ""})
+			pendingOrders.Store(orderId1,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
 			continue
 			}
 			now=time.Now().UnixMilli()
 			orderId2:=fmt.Sprintf("bot-%d-%d",2,now)
-			order2:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
+			order2:=fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"sell","timestamp":%d,"order_type":"limit"}`,
 		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,now)
 
 			if !(SendandWait(order2,orderId2)){
-				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+				orderChannel<-fmt.Sprintf(`{"order_id":"%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
-			pendingOrders.Store(orderId1,Order{timestamp: time.Now().UnixMilli(),status: ""})
-				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+			pendingOrders.Store(orderId1,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
+				orderChannel<-fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,time.Now().UnixMilli())
-			pendingOrders.Store(orderId2,Order{timestamp: time.Now().UnixMilli(),status: ""})
+			pendingOrders.Store(orderId2,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
 			continue
 			}
 			now=time.Now().UnixMilli()
 			orderId3:=fmt.Sprintf("bot-%d-%d",3,now)
-			order3:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:sell,timestamp:%d,order_type:limit}",
+			order3:=fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"sell","timestamp":%d,"order_type":"limit"}`,
 		    orderId3,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,now)
 			if !(SendandWait(order3,orderId3)){
-				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+				orderChannel<-fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
-			pendingOrders.Store(orderId1,Order{timestamp: time.Now().UnixMilli(),status: ""})
-				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+			pendingOrders.Store(orderId1,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
+				orderChannel<-fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity, time.Now().UnixMilli())
-			pendingOrders.Store(orderId2,Order{timestamp: time.Now().UnixMilli(),status: ""})
-				orderChannel<-fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:cancel,timestamp:%d,order_type:limit}",
+			pendingOrders.Store(orderId2,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
+				orderChannel<-fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId3,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,time.Now().UnixMilli())
-			pendingOrders.Store(orderId3,Order{timestamp: time.Now().UnixMilli(),status: ""})
+			pendingOrders.Store(orderId3,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
 			continue
 			}
 			now=time.Now().UnixMilli()
 			orderId4:=fmt.Sprintf("bot-%d-%d",4,now)
-			order4:=fmt.Sprintf("{order_id:%s,bot_id:%s,price:%f,quantity:%d,symbol:IICPC_PRIO,action:buy,timestamp:%d,order_type:limit}",
+			order4:=fmt.Sprintf(`{"order_id":%s,"bot_id":%s,"price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"buy","timestamp":%d,"order_type":"limit"}`,
 		    orderId4,fmt.Sprintf("sniperbot-%d",4),price,quantity,now)
 			orderChannel<-order4
-			pendingOrders.Store(orderId4,Order{timestamp: now,status: ""})
+			pendingOrders.Store(orderId4,Order{Timestamp: now,Status: ""})
 		}
 	}()
 	go func(){
-		for message:= range orderChannel{
-			connection.WriteMessage(websocket.TextMessage,[]byte(message))
-		};
+		for{
+			select{
+		case <-botctx.Done():
+			fmt.Println("shutting down the writable service");
+			return 
+		case msg:=<-orderChannel:
+			connection.WriteMessage(websocket.TextMessage,[]byte(msg))
+		}
+	  }
 	}()
 	go func(){
-		time.Sleep(time.Second);
-		currentTime:=time.Now().UnixMilli()
+		// time.Sleep(time.Second);
+		// currentTime:=time.Now().UnixMilli()
 		for{
-			pendingOrders.Range(func(key, value interface{})bool{
+			select{
+			case <-botctx.Done():
+				fmt.Println("shutting down the sweeper thread")
+				return
+			case <-time.After(time.Second):
+				currentTime:=time.Now().UnixMilli()
+				pendingOrders.Range(func(key, value interface{})bool{
 				orderId:=key.(string);
 				sentOrder:=value.(Order);
-				if currentTime-sentOrder.timestamp>2000 && sentOrder.status==""{
+				if currentTime-sentOrder.Timestamp>2000 && sentOrder.Status==""{
 					fmt.Println("the server took more than 2 second to response so it will not be accepted")
 					pendingOrders.Delete(orderId)
 				}
 				return true;
 			})
+			}
 		}
 	}()
 	go func(){
@@ -276,7 +303,8 @@ func main(){
 			_,message,err:=connection.ReadMessage()
 			if err!=nil{
 				fmt.Println("Connection dropped by the server")
-				close(done)
+				//close(done)
+				kill()
 				return;
 			}
 			var response GeneralServerResponse;
@@ -285,7 +313,8 @@ func main(){
 				fmt.Println("the response returned by the server is not in the desired form")
 				continue;
 			}
-			switch (response.Event){
+			event:=strings.ToLower(response.Event)
+			switch (event){
 			case "filled":
 				var filled_response FilledResponse
 				err:=json.Unmarshal(message,&filled_response)
@@ -305,28 +334,28 @@ func main(){
 					checkingRequest.Delete(filled_response.SellOrderId)
 					continue
 				}
-				pendingOrders.Store(filled_response.BuyOrderId,Order{timestamp: order1.(Order).timestamp,status: "filled"})
-				pendingOrders.Store(filled_response.SellOrderId,Order{timestamp: order2.(Order).timestamp,status: "filled"})
+				pendingOrders.Store(filled_response.BuyOrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "filled"})
+				pendingOrders.Store(filled_response.SellOrderId,Order{Timestamp: order2.(Order).Timestamp,Status: "filled"})
 				req1,_:=checkingRequest.Load(filled_response.BuyOrderId)
 				req2,_:=checkingRequest.Load(filled_response.SellOrderId)
 				buy_req:=req1.(ClientRequest)
 				sell_req:=req2.(ClientRequest)
-				if (buy_req.action=="cancel"||sell_req.action=="cancel")||(buy_req.action==sell_req.action)||
-				(buy_req.symbol!=sell_req.symbol)||(buy_req.quantity!=sell_req.quantity)||(buy_req.bot_id==sell_req.bot_id){
+				if (buy_req.Action=="cancel"||sell_req.Action=="cancel")||(buy_req.Action==sell_req.Action)||
+				(buy_req.Symbol!=sell_req.Symbol)||(buy_req.Quantity!=sell_req.Quantity)||(buy_req.BotId==sell_req.BotId){
 					fmt.Println("response is wrong")
 					latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
-					pendingOrders.Delete(buy_req.order_id)
-					pendingOrders.Delete(sell_req.order_id)
-					checkingRequest.Delete(buy_req.order_id)
-					checkingRequest.Delete(sell_req.order_id)
+					pendingOrders.Delete(buy_req.OrderId)
+					pendingOrders.Delete(sell_req.OrderId)
+					checkingRequest.Delete(buy_req.OrderId)
+					checkingRequest.Delete(sell_req.OrderId)
 					continue
 				}
-				order_symbol:=buy_req.symbol
+				order_symbol:=buy_req.Symbol
 				if order_symbol=="IICPC_PRIO"{
-					if sell_req.bot_id=="sniperbot-2"&&filled_response.MatchPrice==sell_req.price{
+					if sell_req.BotId=="sniperbot-2"&&filled_response.MatchPrice==sell_req.Price{
 					   latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
 					   success:=1
 					   result:=fmt.Sprintf("%d,%d",latency,success)
@@ -338,7 +367,7 @@ func main(){
 					   resultChannel<-result
 					}
 				}else{
-					if buy_req.price>=sell_req.price{
+					if buy_req.Price>=sell_req.Price{
 						latency:=time.Now().UnixMilli()-filled_response.ProcessedAt
 					   success:=1
 					   result:=fmt.Sprintf("%d,%d",latency,success)
@@ -350,10 +379,10 @@ func main(){
 					   resultChannel<-result
 					}
 				}
-				pendingOrders.Delete(buy_req.order_id)
-				pendingOrders.Delete(sell_req.order_id)
-				checkingRequest.Delete(buy_req.order_id)
-				checkingRequest.Delete(sell_req.order_id)
+				pendingOrders.Delete(buy_req.OrderId)
+				pendingOrders.Delete(sell_req.OrderId)
+				checkingRequest.Delete(buy_req.OrderId)
+				checkingRequest.Delete(sell_req.OrderId)
 
 			case "partially_filled":
 				var partially_filled_response PartiallyFilledResponse
@@ -374,45 +403,45 @@ func main(){
 					checkingRequest.Delete(partially_filled_response.SellOrderId)
 					continue
 				}
-				pendingOrders.Store(partially_filled_response.BuyOrderId,Order{timestamp: order1.(Order).timestamp,status: "partially_filled"})
-				pendingOrders.Store(partially_filled_response.SellOrderId,Order{timestamp: order2.(Order).timestamp,status: "partially_filled"})
+				pendingOrders.Store(partially_filled_response.BuyOrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "partially_filled"})
+				pendingOrders.Store(partially_filled_response.SellOrderId,Order{Timestamp: order2.(Order).Timestamp,Status: "partially_filled"})
 				req1,_:=checkingRequest.Load(partially_filled_response.BuyOrderId)
 				req2,_:=checkingRequest.Load(partially_filled_response.SellOrderId)
 				buy_req:=req1.(ClientRequest)
 				sell_req:=req2.(ClientRequest)
-				if (buy_req.action=="cancel"||sell_req.action=="cancel")||(buy_req.action==sell_req.action)||
-				(buy_req.symbol!=sell_req.symbol)||(buy_req.bot_id==sell_req.bot_id){
+				if (buy_req.Action=="cancel"||sell_req.Action=="cancel")||(buy_req.Action==sell_req.Action)||
+				(buy_req.Symbol!=sell_req.Symbol)||(buy_req.BotId==sell_req.OrderId){
 					fmt.Println("response is wrong")
 					latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
-					pendingOrders.Delete(buy_req.order_id)
-					pendingOrders.Delete(sell_req.order_id)
-					checkingRequest.Delete(buy_req.order_id)
-					checkingRequest.Delete(sell_req.order_id)
+					pendingOrders.Delete(buy_req.OrderId)
+					pendingOrders.Delete(sell_req.OrderId)
+					checkingRequest.Delete(buy_req.OrderId)
+					checkingRequest.Delete(sell_req.OrderId)
 					continue
 				}
-				if (buy_req.price>=partially_filled_response.MatchPrice&&partially_filled_response.MatchPrice<=sell_req.price)&&
-				(buy_req.price>=sell_req.price)&&(partially_filled_response.BuyRemaining+partially_filled_response.FilledQuantity==buy_req.quantity)&&
-				(partially_filled_response.SellRemaining+partially_filled_response.FilledQuantity==sell_req.quantity)&&(buy_req.bot_id!=sell_req.bot_id){
+				if (buy_req.Price>=partially_filled_response.MatchPrice&&partially_filled_response.MatchPrice<=sell_req.Price)&&
+				(buy_req.Price>=sell_req.Price)&&(partially_filled_response.BuyRemaining+partially_filled_response.FilledQuantity==buy_req.Quantity)&&
+				(partially_filled_response.SellRemaining+partially_filled_response.FilledQuantity==sell_req.Quantity)&&(buy_req.BotId!=sell_req.BotId){
 					   latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
 					   success:=1
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
-					   buy_req.quantity=partially_filled_response.BuyRemaining
-					   sell_req.quantity=partially_filled_response.SellRemaining
-					   checkingRequest.Store(buy_req.order_id,buy_req)
-					   checkingRequest.Store(sell_req.order_id,sell_req)
+					   buy_req.Quantity=partially_filled_response.BuyRemaining
+					   sell_req.Quantity=partially_filled_response.SellRemaining
+					   checkingRequest.Store(buy_req.OrderId,buy_req)
+					   checkingRequest.Store(sell_req.OrderId,sell_req)
 				}else{
 					   latency:=time.Now().UnixMilli()-partially_filled_response.ProcessedAt
 					   success:=0
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
-				pendingOrders.Delete(buy_req.order_id)
-				pendingOrders.Delete(sell_req.order_id)
-				checkingRequest.Delete(buy_req.order_id)
-				checkingRequest.Delete(sell_req.order_id)
+				pendingOrders.Delete(buy_req.OrderId)
+				pendingOrders.Delete(sell_req.OrderId)
+				checkingRequest.Delete(buy_req.OrderId)
+				checkingRequest.Delete(sell_req.OrderId)
 				}
 			case "acknowledgement":
 				var ack_response AcknowledgedResponse
@@ -431,10 +460,10 @@ func main(){
 					checkingRequest.Delete(ack_response.OrderId)
 					continue
 				}
-				pendingOrders.Store(ack_response.OrderId,Order{timestamp: order1.(Order).timestamp,status: "acknowledgement"})
+				pendingOrders.Store(ack_response.OrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "acknowledgement"})
 				req,_:=checkingRequest.Load(ack_response.OrderId)
 				request:=req.(ClientRequest)
-				if request.symbol=="IICPC_PRIO"{
+				if request.Symbol=="IICPC_PRIO"{
 					fillChannel<-"acknowledgement"
 					latency:=time.Now().UnixMilli()-ack_response.ProcessedAt
 					success:=1
@@ -463,10 +492,10 @@ func main(){
 					checkingRequest.Delete(cancel_response.OrderId)
 					continue
 				}
-				pendingOrders.Store(cancel_response.OrderId,Order{timestamp: order.(Order).timestamp,status: "cancelled"})
+				pendingOrders.Store(cancel_response.OrderId,Order{Timestamp: order.(Order).Timestamp,Status: "cancelled"})
 				req,_:=checkingRequest.Load(cancel_response.OrderId)
 				request:=req.(ClientRequest)
-				if request.bot_id==cancel_response.BotId{
+				if request.BotId==cancel_response.BotId{
 					latency:=time.Now().UnixMilli()-cancel_response.ProcessedAt
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
@@ -477,8 +506,8 @@ func main(){
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 				}
-				pendingOrders.Delete(request.order_id)
-				checkingRequest.Delete(request.order_id)
+				pendingOrders.Delete(request.OrderId)
+				checkingRequest.Delete(request.OrderId)
 			case "rejected":
 				var reject_response RejectedEvent
 				err=json.Unmarshal(message,&reject_response)
@@ -497,20 +526,20 @@ func main(){
 					checkingRequest.Delete(reject_response.IncomingOrderId)
 					continue
 				}
-				pendingOrders.Store(reject_response.IncomingOrderId,Order{timestamp: order1.(Order).timestamp,status: "rejected"})
-				pendingOrders.Store(reject_response.RestingOrderId,Order{timestamp: order2.(Order).timestamp,status: "rejected"})
+				pendingOrders.Store(reject_response.IncomingOrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "rejected"})
+				pendingOrders.Store(reject_response.RestingOrderId,Order{Timestamp: order2.(Order).Timestamp,Status: "rejected"})
 				req1,_:=checkingRequest.Load(reject_response.IncomingOrderId)
 				req2,_:=checkingRequest.Load(reject_response.RestingOrderId)
 				incoming_request:=req1.(ClientRequest)
 				resting_req,_:=req2.(ClientRequest)
-				if (incoming_request.action!="cancel"&&resting_req.action!="cancel")&&(incoming_request.action!=resting_req.action)&&
-				(incoming_request.symbol==resting_req.symbol)&&(incoming_request.bot_id==resting_req.bot_id){
+				if (incoming_request.Action!="cancel"&&resting_req.Action!="cancel")&&(incoming_request.Action!=resting_req.Action)&&
+				(incoming_request.Symbol==resting_req.Symbol)&&(incoming_request.BotId==resting_req.BotId){
 					latency:=time.Now().UnixMilli()-reject_response.ProcessedAt
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
-					pendingOrders.Delete(incoming_request.order_id)
-					checkingRequest.Delete(incoming_request.order_id)
+					pendingOrders.Delete(incoming_request.OrderId)
+					checkingRequest.Delete(incoming_request.OrderId)
 				}else{
 					latency:=time.Now().UnixMilli()-reject_response.ProcessedAt
 					success:=0
@@ -534,10 +563,10 @@ func main(){
 					checkingRequest.Delete(invalid_request.OrderId)
 					continue
 				}
-				pendingOrders.Store(invalid_request.OrderId,Order{timestamp: order.(Order).timestamp,status: "invalid request"})
+				pendingOrders.Store(invalid_request.OrderId,Order{Timestamp: order.(Order).Timestamp,Status: "invalid request"})
 				req,_:=checkingRequest.Load(invalid_request.OrderId)
 				request:=req.(ClientRequest)
-				if request.price<=0 || request.quantity<=0 || request.order_type=="market" || slices.Contains([]string{"hold","wait","steal"},request.action){
+				if request.Price<=0 || request.Quantity<=0 || request.OrderType=="market" || slices.Contains([]string{"hold","wait","steal"},request.Action){
 					latency:=time.Now().UnixMilli()-invalid_request.ProcessedAt
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
@@ -548,8 +577,8 @@ func main(){
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 				}
-				pendingOrders.Delete(request.order_id)
-				checkingRequest.Delete(request.order_id)
+				pendingOrders.Delete(request.OrderId)
+				checkingRequest.Delete(request.OrderId)
 			default:
 				fmt.Println("the event in the response field doen not match with the above events so the rseponse is wrong")
 				latency:=time.Now().UnixMilli()-response.ProcessedAt
@@ -561,23 +590,87 @@ func main(){
 	}()
 	go func(){
 		ticker:=time.NewTicker(100*time.Millisecond)
+		defer ticker.Stop()
 		batch:=make([]interface{},0,1000)
 		for{
 			select{
+			case <-botctx.Done():
+				fmt.Println("shutting down the thread to write message in the redis db ")
+				return
 			case result:=<-resultChannel:
 				batch=append(batch,result)
 				if len(batch)>=1000{
-					rdb.RPush(ctx,"telemetryQueue",batch...)
+					rdb.RPush(ctx,"telemetry_queue",batch...)
 					batch=batch[:0]
 				}
 			case t:=<-ticker.C:
-				fmt.Printf("Current second: %d",t.Second())
+				fmt.Printf("The Current second is : %d\n",t.Second())
 				if len(batch)>0{
-					rdb.RPush(ctx,"telemetryQueue",batch...)
+					rdb.RPush(ctx,"telemetry_queue",batch...)
 					batch=batch[:0]
 				}
 			}
 		}
 
 	}()
+	<-botctx.Done()
+}
+
+type LoadGenerationServer struct{
+	pb.UnimplementedLoadGenerationServer
+	mu sync.Mutex
+	cancelFunc context.CancelFunc
+}
+
+func(s *LoadGenerationServer)StartLoad(ctx context.Context,req *pb.StartingRequest)(res *pb.StartingResponse,err error){
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancelFunc!=nil{
+		return nil,fmt.Errorf("a test is already running")
+	}
+	botctx,cancel:=context.WithCancel(context.Background())
+	s.cancelFunc=cancel
+	url:=req.URL
+	go LaunchBots(botctx,url,cancel)
+	return &pb.StartingResponse{
+		Message: "bots started successfully",
+	},nil
+}
+
+func(s *LoadGenerationServer)StopLoad(ctx context.Context,req *pb.StoppingRequest)(res *pb.StoppingResponse,err error){
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cancelFunc==nil{
+		return &pb.StoppingResponse{
+			Message: "No test is started",
+		},nil
+	}
+	s.cancelFunc()
+	s.cancelFunc=nil
+	return &pb.StoppingResponse{
+		Message: "test has been stopped",
+	},nil
+}
+
+func main(){
+	rdb=redis.NewClient(&redis.Options{
+		Addr:"localhost:6379",
+		Password:"",
+		DB:0,
+		Protocol:2,
+	})
+	fmt.Println("Connected with redis")
+	addr:="localhost:50051"
+	lis,err:=net.Listen("tcp",addr)
+	if err!=nil{
+		log.Fatal("Unable to start the listener due to some error ",err)
+	}
+	fmt.Println("server started at ip address ",addr)
+	grpcServer:=grpc.NewServer()
+	pb.RegisterLoadGenerationServer(grpcServer,&LoadGenerationServer{})
+	ERR:=grpcServer.Serve(lis)
+	if ERR!=nil{
+		log.Fatal("failed to start the grpc server")
+	}
 }
