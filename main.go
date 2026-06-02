@@ -133,6 +133,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 			botId:=fmt.Sprintf("bot-%d",i)
 			go func(bot_id string){
 				for{
+					fmt.Println("preparing request ")
 					now:=time.Now().UnixMilli();
 					orderId:=fmt.Sprintf("%s-%d",botId,now);
 					price:=100.0+rand.Float64()*50.0;
@@ -171,6 +172,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 						fmt.Println("error in converting request to byte array")
 						continue
 					}
+					//fmt.Println("writing request to the channels and maps")
 				    orderChannel<-string(message)
 					checkingRequest.Store(orderId,request)
 					order:=Order{
@@ -192,6 +194,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 	}()
 	go func(){
 		for{
+			fmt.Println("sending specifically filled request to the engine ")
 			price:=100+rand.Float64()*100
 		    quantity:=rand.Intn(100)+50
 			drainLoop:
@@ -208,7 +211,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 			now:=time.Now().UnixMilli()
 			orderId1:=fmt.Sprintf("bot-%d-%d",1,now)
 
-			order1:=fmt.Sprintf(`{"order_id":"%s","bot_id":"%s","price":%f,"qantity":%d,"symbol":"IICPC_PRIO","action":"sell","timestamp":%d,"order_type":"limit"}`,
+			order1:=fmt.Sprintf(`{"order_id":"%s","bot_id":"%s","price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"sell","timestamp":%d,"order_type":"limit"}`,
 		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,now)
 
 			SendandWait:=func(order string,orderId string)bool{
@@ -272,6 +275,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 			fmt.Println("shutting down the writable service");
 			return 
 		case msg:=<-orderChannel:
+			fmt.Println("sending request to the engine")
 			connection.WriteMessage(websocket.TextMessage,[]byte(msg))
 		}
 	  }
@@ -317,6 +321,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 			event:=strings.ToLower(response.Event)
 			switch (event){
 			case "filled":
+				fmt.Println("receiving filled response")
 				var filled_response FilledResponse
 				err:=json.Unmarshal(message,&filled_response)
 				if err!=nil{
@@ -389,6 +394,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				checkingRequest.Delete(sell_req.OrderId)
 
 			case "partially filled":
+				fmt.Println("receiving partially filled response")
 				var partially_filled_response PartiallyFilledResponse
 				err:=json.Unmarshal(message,&partially_filled_response)
 				if err!=nil{
@@ -451,6 +457,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				checkingRequest.Delete(sell_req.OrderId)
 				}
 			case "acknowledged":
+				fmt.Println("acknowledged response received")
 				var ack_response AcknowledgedResponse
 				err:=json.Unmarshal(message,&ack_response)
 				if err!=nil{
@@ -522,6 +529,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				pendingOrders.Delete(request.OrderId)
 				checkingRequest.Delete(request.OrderId)
 			case "rejected":
+				fmt.Println("rejected response received")
 				var reject_response RejectedEvent
 				err=json.Unmarshal(message,&reject_response)
 				if err!=nil{
@@ -567,6 +575,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 					checkingRequest.Delete(resting_req.OrderId)
 				}
 			case "invalid request":
+				fmt.Println("invalid request response received")
 				var invalid_request InvalidRequest
 				err:=json.Unmarshal(message,&invalid_request)
 				if err!=nil{
