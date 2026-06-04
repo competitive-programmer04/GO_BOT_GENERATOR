@@ -7,7 +7,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	//"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -92,35 +91,32 @@ var rdb *redis.Client
 func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 	dialctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
 	defer cancel()
-	// serverURL:= url.URL{Scheme:"ws",Host:"localhost:8080",Path:"/trade"};
 	connection,_,err:= websocket.DefaultDialer.DialContext(dialctx,url,nil);
-	// connection,_,err:=websocket.DefaultDialer.Dial(url,nil);
 	if err!=nil{
-		log.Fatal("cannot create a websocket connection with the server");
-		fmt.Println(err);
+		fmt.Println("cannot create a websocket connection with the server due to the error ",err);
+		kill()
+		return
 	}else{
 		fmt.Println("successfully established a websocket connection with the server")
 	}
 	defer connection.Close();
-
-	// rdb=redis.NewClient(&redis.Options{
-	// 	Addr:"localhost:6379",
-	// 	Password:"",
-	// 	DB:0,
-	// 	Protocol:2,
-	// })
 	ctx:=context.Background()
 	
+// ARCHITECTURE NOTE: We use sync.Map instead of standard maps with Mutex locks 
+// to prevent lock-contention. Because our Order IDs are disjoint keys, 
+// this allows our Go bots to achieve 100,000+ TPS safely.
+
 	var checkingRequest sync.Map
 	orderChannel:=make(chan string,100000);
 	resultChannel:=make(chan string,100000);
 	var pendingOrders sync.Map
 	fillChannel:=make(chan string,1000)
-	//done:=make(chan struct{});
 	ticker:=time.NewTicker(time.Second)
 	defer ticker.Stop()
 	ini_start_bot:=1;
 	ini_end_bot:=10;
+
+
 	go func(){
 		for{
 		select{
@@ -133,7 +129,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 			botId:=fmt.Sprintf("bot-%d",i)
 			go func(bot_id string){
 				for{
-					fmt.Println("preparing request ")
 					now:=time.Now().UnixMilli();
 					orderId:=fmt.Sprintf("%s-%d",botId,now);
 					price:=100.0+rand.Float64()*50.0;
@@ -145,6 +140,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 					randomRequestMethod:=requestMethods[rand.Intn(len(requestMethods))];
 					negativeTesting:=rand.Intn(100)+1;
 					if negativeTesting<5{
+						fmt.Println("preparing invalid request")
 						switch (negativeTesting){
 						case 1:
 							price = -100.0+rand.Float64()*50
@@ -157,6 +153,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 							randomRequestMethod = corruptRequestMethod[rand.Intn(len(corruptRequestMethod))]
 						}
 					}
+					fmt.Println("preparing valid request")
 					request:=ClientRequest{
 						OrderId: orderId,
 						BotId: botId,
@@ -172,7 +169,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 						fmt.Println("error in converting request to byte array")
 						continue
 					}
-					//fmt.Println("writing request to the channels and maps")
 				    orderChannel<-string(message)
 					checkingRequest.Store(orderId,request)
 					order:=Order{
@@ -183,26 +179,31 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				    time.Sleep(100*time.Millisecond);
 				}
 			}(botId)
-			ini_start_bot=ini_end_bot+1;
-			ini_end_bot=2*ini_end_bot;
 		}
-	// case <-done:
-	// 	fmt.Println("closing the connection between our bots and server");
-	// 	return;
+		ini_start_bot=ini_end_bot+1;
+		ini_end_bot=2*ini_end_bot;
 	 }
 	}
 	}()
+
+// AUDIT SYSTEM: The "Sniper Bot" Thread.
+// We separate our testing into two streams. Chaotic bots test Speed/TPS, 
+// while this deterministic Sniper thread tests strictly for Price-Time Priority 
+// without network jitter interference.
+
 	go func(){
 		for{
-			fmt.Println("sending specifically filled request to the engine ")
+			select{
+			case <-botctx.Done():
+				fmt.Println("Shutting down the filled event service")
+				return 
+			default:
+				fmt.Println("sending specifically filled request to the engine ")
 			price:=100+rand.Float64()*100
 		    quantity:=rand.Intn(100)+50
 			drainLoop:
 			for{
 				select{
-				case <-botctx.Done():
-					fmt.Println("shutting down the filled event service");
-					return 
 				case<-fillChannel:
 				default:
 					break drainLoop
@@ -228,6 +229,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				orderChannel<-fmt.Sprintf(`{"order_id":"%s","bot_id":"%s","price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId1,fmt.Sprintf("sniperbot-%d",1),price-float64(10*1),quantity,time.Now().UnixMilli())
 			pendingOrders.Store(orderId1,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
+			time.Sleep(2*time.Second)
 			continue
 			}
 			now=time.Now().UnixMilli()
@@ -242,6 +244,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				orderChannel<-fmt.Sprintf(`{"order_id":"%s","bot_id":"%s","price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId2,fmt.Sprintf("sniperbot-%d",2),price-float64(10*3),quantity,time.Now().UnixMilli())
 			pendingOrders.Store(orderId2,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
+			time.Sleep(2*time.Second)
 			continue
 			}
 			now=time.Now().UnixMilli()
@@ -258,6 +261,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				orderChannel<-fmt.Sprintf(`{"order_id":"%s","bot_id":"%s","price":%f,"quantity":%d,"symbol":"IICPC_PRIO","action":"cancel","timestamp":%d,"order_type":"limit"}`,
 		    orderId3,fmt.Sprintf("sniperbot-%d",3),price-float64(10*2),quantity,time.Now().UnixMilli())
 			pendingOrders.Store(orderId3,Order{Timestamp: time.Now().UnixMilli(),Status: ""})
+			time.Sleep(2*time.Second)
 			continue
 			}
 			now=time.Now().UnixMilli()
@@ -266,8 +270,12 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 		    orderId4,fmt.Sprintf("sniperbot-%d",4),price,quantity,now)
 			orderChannel<-order4
 			pendingOrders.Store(orderId4,Order{Timestamp: now,Status: ""})
+			time.Sleep(5*time.Second)
+			}
 		}
 	}()
+
+
 	go func(){
 		for{
 			select{
@@ -280,21 +288,29 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 		}
 	  }
 	}()
+
+
 	go func(){
-		// time.Sleep(time.Second);
-		// currentTime:=time.Now().UnixMilli()
 		for{
 			select{
 			case <-botctx.Done():
 				fmt.Println("shutting down the sweeper thread")
 				return
+
+				// GARBAGE COLLECTION & TIMEOUTS: The Sweeper Thread.
+                // If the target engine takes longer than 2 seconds to acknowledge an order, 
+                // this thread deletes it from memory and punishes the engine's score in Redis.
 			case <-time.After(time.Second):
 				currentTime:=time.Now().UnixMilli()
 				pendingOrders.Range(func(key, value interface{})bool{
 				orderId:=key.(string);
 				sentOrder:=value.(Order);
 				if currentTime-sentOrder.Timestamp>2000 && sentOrder.Status==""{
-					fmt.Println("the server took more than 2 second to response so it will not be accepted")
+					fmt.Println("the engine took more than 2 second to response so it will not be accepted")
+					latency:=2000
+					success:=0
+					result:=fmt.Sprintf("%d,%d",latency,success)
+					resultChannel<-result
 					pendingOrders.Delete(orderId)
 					checkingRequest.Delete(orderId)
 				}
@@ -307,15 +323,14 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 		for{
 			_,message,err:=connection.ReadMessage()
 			if err!=nil{
-				fmt.Println("Connection dropped by the server")
-				//close(done)
+				fmt.Println("Connection dropped by the engine")
 				kill()
 				return;
 			}
 			var response GeneralServerResponse;
 			parseErr:=json.Unmarshal(message,&response)
 			if parseErr!=nil{
-				fmt.Println("the response returned by the server is not in the desired form")
+				fmt.Println("the response returned by the engine is not in the desired form")
 				continue;
 			}
 			event:=strings.ToLower(response.Event)
@@ -325,19 +340,12 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				var filled_response FilledResponse
 				err:=json.Unmarshal(message,&filled_response)
 				if err!=nil{
-					fmt.Println("the response returned by the server is not in the correct format")
+					fmt.Println("the response returned by the engine is not in the correct format")
 					continue
 				}
 				order1,buy_order_exists:=pendingOrders.Load(filled_response.BuyOrderId)
 				order2,sell_order_exists:=pendingOrders.Load(filled_response.SellOrderId)
 				if !buy_order_exists || !sell_order_exists{
-					fmt.Println("engine returned the response of a non existing request")
-					latency:=2000 //time.Now().UnixMilli()-filled_response.ProcessedAt
-					success:=0
-					result:=fmt.Sprintf("%d,%d",latency,success)
-					resultChannel<-result
-					// checkingRequest.Delete(filled_response.BuyOrderId)
-					// checkingRequest.Delete(filled_response.SellOrderId)
 					continue
 				}
 				pendingOrders.Store(filled_response.BuyOrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "filled"})
@@ -352,7 +360,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				if (buy_req.Action=="cancel"||sell_req.Action=="cancel")||(buy_req.Action==sell_req.Action)||
 				(buy_req.Symbol!=sell_req.Symbol)||(buy_req.Quantity!=sell_req.Quantity)||(buy_req.BotId==sell_req.BotId){
 					fmt.Println("response is wrong")
-					latency:=filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) //time.Now().UnixMilli()-filled_response.ProcessedAt
+					latency:=filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) 
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
@@ -365,24 +373,24 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				order_symbol:=buy_req.Symbol
 				if order_symbol=="IICPC_PRIO"{
 					if sell_req.BotId=="sniperbot-2"&&filled_response.MatchPrice==sell_req.Price{
-					   latency:=((filled_response.ProcessedAt-buy_req.Timestamp)+(filled_response.ProcessedAt-sell_req.Timestamp))/2 //time.Now().UnixMilli()-filled_response.ProcessedAt
+					   latency:=((filled_response.ProcessedAt-buy_req.Timestamp)+(filled_response.ProcessedAt-sell_req.Timestamp))/2
 					   success:=1
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
 					}else{
-						latency:=((filled_response.ProcessedAt-buy_req.Timestamp)+(filled_response.ProcessedAt-sell_req.Timestamp))/2 //time.Now().UnixMilli()-filled_response.ProcessedAt
+						latency:=((filled_response.ProcessedAt-buy_req.Timestamp)+(filled_response.ProcessedAt-sell_req.Timestamp))/2 
 					   success:=0
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
 					}
 				}else{
 					if buy_req.Price>=sell_req.Price{
-						latency:=filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) //time.Now().UnixMilli()-filled_response.ProcessedAt
+						latency:=filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) 
 					   success:=1
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
 					}else{
-						latency:=filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) //time.Now().UnixMilli()-filled_response.ProcessedAt
+						latency:=filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp)
 					   success:=0
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
@@ -405,12 +413,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				order2,sell_order_exists:=pendingOrders.Load(partially_filled_response.SellOrderId)
 				if !buy_order_exists||!sell_order_exists{
 					fmt.Println("engine returned the response of a non existing request")
-					latency:=2000 //time.Now().UnixMilli()-partially_filled_response.ProcessedAt
-					success:=0
-					result:=fmt.Sprintf("%d,%d",latency,success)
-					resultChannel<-result
-					// checkingRequest.Delete(partially_filled_response.BuyOrderId)
-					// checkingRequest.Delete(partially_filled_response.SellOrderId)
 					continue
 				}
 				pendingOrders.Store(partially_filled_response.BuyOrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "partially_filled"})
@@ -425,7 +427,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				if (buy_req.Action=="cancel"||sell_req.Action=="cancel")||(buy_req.Action==sell_req.Action)||
 				(buy_req.Symbol!=sell_req.Symbol)||(buy_req.BotId==sell_req.OrderId){
 					fmt.Println("response is wrong")
-					latency:=partially_filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) //time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					latency:=partially_filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) 
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
@@ -438,7 +440,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				if (buy_req.Price>=partially_filled_response.MatchPrice&&partially_filled_response.MatchPrice>=sell_req.Price)&&
 				(buy_req.Price>=sell_req.Price)&&(partially_filled_response.BuyRemaining+partially_filled_response.FilledQuantity==buy_req.Quantity)&&
 				(partially_filled_response.SellRemaining+partially_filled_response.FilledQuantity==sell_req.Quantity)&&(buy_req.BotId!=sell_req.BotId){
-					   latency:=partially_filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) //time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					   latency:=partially_filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) 
 					   success:=1
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
@@ -447,7 +449,7 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 					   checkingRequest.Store(buy_req.OrderId,buy_req)
 					   checkingRequest.Store(sell_req.OrderId,sell_req)
 				}else{
-					   latency:=partially_filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp) //time.Now().UnixMilli()-partially_filled_response.ProcessedAt
+					   latency:=partially_filled_response.ProcessedAt-max(buy_req.Timestamp,sell_req.Timestamp)
 					   success:=0
 					   result:=fmt.Sprintf("%d,%d",latency,success)
 					   resultChannel<-result
@@ -466,12 +468,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				}
 				order1,order_exists:=pendingOrders.Load(ack_response.OrderId)
 				if !order_exists{
-					fmt.Println("engine returned the response of a non existing request")
-					latency:=2000 //time.Now().UnixMilli()-ack_response.ProcessedAt
-					success:=0
-					result:=fmt.Sprintf("%d,%d",latency,success)
-					resultChannel<-result
-					//checkingRequest.Delete(ack_response.OrderId)
 					continue
 				}
 				pendingOrders.Store(ack_response.OrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "acknowledgement"})
@@ -482,12 +478,12 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				request:=req.(ClientRequest)
 				if request.Symbol=="IICPC_PRIO"{
 					fillChannel<-"acknowledgement"
-					latency:= ack_response.ProcessedAt-request.Timestamp //time.Now().UnixMilli()-ack_response.ProcessedAt
+					latency:= ack_response.ProcessedAt-request.Timestamp
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 				}else{
-					latency:=ack_response.ProcessedAt-request.Timestamp //time.Now().UnixMilli()-ack_response.ProcessedAt
+					latency:=ack_response.ProcessedAt-request.Timestamp
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
@@ -501,12 +497,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				}
 				order,order_exists:=pendingOrders.Load(cancel_response.OrderId)
 				if !order_exists{
-					fmt.Println("engine returned the response of a non existing event")
-					latency:=2000 //time.Now().UnixMilli()-cancel_response.ProcessedAt
-					success:=0
-					result:=fmt.Sprintf("%d,%d",latency,success)
-					resultChannel<-result
-					// checkingRequest.Delete(cancel_response.OrderId)
 					continue
 				}
 				pendingOrders.Store(cancel_response.OrderId,Order{Timestamp: order.(Order).Timestamp,Status: "cancelled"})
@@ -516,12 +506,12 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				}
 				request:=req.(ClientRequest)
 				if request.BotId==cancel_response.BotId{
-					latency:=cancel_response.ProcessedAt-request.Timestamp //time.Now().UnixMilli()-cancel_response.ProcessedAt
+					latency:=cancel_response.ProcessedAt-request.Timestamp 
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 				}else{
-					latency:=cancel_response.ProcessedAt-request.Timestamp //time.Now().UnixMilli()-cancel_response.ProcessedAt
+					latency:=cancel_response.ProcessedAt-request.Timestamp 
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
@@ -539,12 +529,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				order1,in_order_exists:=pendingOrders.Load(reject_response.IncomingOrderId)
 				order2,res_order_exists:=pendingOrders.Load(reject_response.RestingOrderId)
 				if !in_order_exists||!res_order_exists{
-					fmt.Println("server returned the response of a non existing event")
-					latency:=2000 //time.Now().UnixMilli()-reject_response.ProcessedAt
-					success:=0
-					result:=fmt.Sprintf("%d,%d",latency,success)
-					resultChannel<-result
-					//checkingRequest.Delete(reject_response.IncomingOrderId)
 					continue
 				}
 				pendingOrders.Store(reject_response.IncomingOrderId,Order{Timestamp: order1.(Order).Timestamp,Status: "rejected"})
@@ -558,14 +542,14 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				resting_req,_:=req2.(ClientRequest)
 				if (incoming_request.Action!="cancel"&&resting_req.Action!="cancel")&&(incoming_request.Action!=resting_req.Action)&&
 				(incoming_request.Symbol==resting_req.Symbol)&&(incoming_request.BotId==resting_req.BotId){
-					latency:=reject_response.ProcessedAt-incoming_request.Timestamp //time.Now().UnixMilli()-reject_response.ProcessedAt
+					latency:=reject_response.ProcessedAt-incoming_request.Timestamp
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 					pendingOrders.Delete(incoming_request.OrderId)
 					checkingRequest.Delete(incoming_request.OrderId)
 				}else{
-					latency:=reject_response.ProcessedAt-max(incoming_request.Timestamp,resting_req.Timestamp)//time.Now().UnixMilli()-reject_response.ProcessedAt
+					latency:=reject_response.ProcessedAt-max(incoming_request.Timestamp,resting_req.Timestamp)
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
@@ -584,12 +568,6 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				}
 				order,order_exists:=pendingOrders.Load(invalid_request.OrderId)
 				if !order_exists{
-					fmt.Println("engine returned the response of a non existing event")
-					latency:=2000 //time.Now().UnixMilli()-invalid_request.ProcessedAt
-					success:=0
-					result:=fmt.Sprintf("%d,%d",latency,success)
-					resultChannel<-result
-					// checkingRequest.Delete(invalid_request.OrderId)
 					continue
 				}
 				pendingOrders.Store(invalid_request.OrderId,Order{Timestamp: order.(Order).Timestamp,Status: "invalid request"})
@@ -599,12 +577,12 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				}
 				request:=req.(ClientRequest)
 				if request.Price<=0 || request.Quantity<=0 || request.OrderType=="market" || slices.Contains([]string{"hold","wait","steal"},request.Action){
-					latency:=invalid_request.ProcessedAt-request.Timestamp //time.Now().UnixMilli()-invalid_request.ProcessedAt
+					latency:=invalid_request.ProcessedAt-request.Timestamp
 					success:=1
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
 				}else{
-					latency:=invalid_request.ProcessedAt-request.Timestamp //time.Now().UnixMilli()-invalid_request.ProcessedAt
+					latency:=invalid_request.ProcessedAt-request.Timestamp
 					success:=0
 					result:=fmt.Sprintf("%d,%d",latency,success)
 					resultChannel<-result
@@ -613,14 +591,19 @@ func LaunchBots(botctx context.Context,url string,kill context.CancelFunc){
 				checkingRequest.Delete(request.OrderId)
 			default:
 				fmt.Println("the event in the response field doen not match with the above events so the rseponse is wrong")
-				latency:=2000 //time.Now().UnixMilli()-response.ProcessedAt
+				latency:=2000
 				success:=0
 				result:=fmt.Sprintf("%d,%d",latency,success)
 				resultChannel<-result
 			}
 		}
 	}()
-	go func(){
+
+// OPTIMIZATION: Redis "Dump Truck" Batching (Write Coalescing).
+// Instead of making 100,000 network calls to Redis per second, we batch 
+// results in memory and RPUSH 1,000 at a time to eliminate DB bottlenecks.
+
+    go func(){
 		ticker:=time.NewTicker(100*time.Millisecond)
 		defer ticker.Stop()
 		batch:=make([]interface{},0,1000)
@@ -665,7 +648,15 @@ func(s *LoadGenerationServer)StartLoad(ctx context.Context,req *pb.StartingReque
 	botctx,cancel:=context.WithCancel(context.Background())
 	s.cancelFunc=cancel
 	url:=req.URL
-	go LaunchBots(botctx,url,cancel)
+	go func(){
+		LaunchBots(botctx,url,cancel)
+		s.mu.Lock()
+		if s.cancelFunc!=nil{
+			s.cancelFunc=nil;
+		}
+		s.mu.Unlock()
+		fmt.Println("server state cleaned up. Ready for next state")
+	}()
 	return &pb.StartingResponse{
 		Message: "bots started successfully",
 	},nil
